@@ -1,0 +1,414 @@
+@page "/carsharing"
+
+@using System.ComponentModel.DataAnnotations
+@using Microsoft.Extensions.Options
+@inject IHttpClientFactory HttpClientFactory
+@inject IOptions<ServiceEndpointsOptions> Options
+
+<PageTitle>Carsharing</PageTitle>
+
+<h1>Carsharing</h1>
+<p class="text-muted">Alle Informationen kommen gebündelt aus dem Carsharing-Service.</p>
+
+<div class="card participant-selector mb-4">
+    <div class="card-body">
+        <h2 class="h5">Teilnehmer-ID setzen</h2>
+        <div class="input-group">
+            <InputText @bind-Value="_participantInput" class="form-control" placeholder="ParticipantId eingeben"/>
+            <button class="btn btn-primary" @onclick="ApplyParticipantAsync">Buchungen laden</button>
+        </div>
+        @if (!string.IsNullOrWhiteSpace(_participantStatus))
+        {
+            <p class="mt-2 text-info">@_participantStatus</p>
+        }
+    </div>
+</div>
+
+<div class="carsharing-layout">
+    <section>
+        <header class="section-header">
+            <h2>Fahrzeuge</h2>
+            <button class="btn btn-link" @onclick="LoadVehiclesAsync" disabled="@_vehiclesLoading">Aktualisieren</button>
+        </header>
+
+        <div class="row g-2 mb-3">
+            <div class="col-md-6">
+                <div class="form-floating">
+                    <InputText @bind-Value="_vehicleFilter.Location" class="form-control" placeholder="Ort"/>
+                    <label>Standort</label>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="form-floating">
+                    <InputSelect @bind-Value="_vehicleFilter.Status" class="form-select">
+                        <option value="">Alle</option>
+                        <option value="available">Verfügbar</option>
+                        <option value="reserved">Reserviert</option>
+                    </InputSelect>
+                    <label>Status</label>
+                </div>
+            </div>
+        </div>
+
+        @if (_vehiclesLoading)
+        {
+            <p>Lade Fahrzeuge...</p>
+        }
+        else if (_vehicles.Count == 0)
+        {
+            <p class="text-muted">Keine Fahrzeuge gemäß Filter gefunden.</p>
+        }
+        else
+        {
+            <div class="row row-cols-1 row-cols-md-2 g-3">
+                @foreach (var vehicle in _vehicles)
+                {
+                    <div class="col">
+                        <div class="card h-100 @(vehicle.VehicleId == _selectedVehicle?.VehicleId ? "border-primary" : string.Empty)">
+                            <div class="card-body">
+                                <div class="d-flex justify-content-between align-items-center">
+                                    <div>
+                                        <h3 class="h5">@vehicle.Model</h3>
+                                        <p class="text-muted mb-1">@vehicle.LicensePlate</p>
+                                    </div>
+                                    <span class="badge @(vehicle.Status == "available" ? "text-bg-success" : "text-bg-secondary")">
+                                        @vehicle.Status
+                                    </span>
+                                </div>
+                                <p class="mb-0"><small>@vehicle.CurrentLocation</small></p>
+                            </div>
+                            <div class="card-footer bg-transparent">
+                                <button class="btn btn-outline-primary w-100"
+                                        @onclick="@(() => SelectVehicle(vehicle))">
+                                    Auswählen
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                }
+            </div>
+        }
+    </section>
+
+    <section>
+        <header class="section-header">
+            <h2>Buchung</h2>
+        </header>
+
+        @if (_selectedVehicle is null)
+        {
+            <p class="text-muted">Fahrzeug markieren, um zu buchen.</p>
+        }
+        else if (!HasParticipant)
+        {
+            <div class="alert alert-warning">Bitte zuerst eine gültige Teilnehmer-ID setzen.</div>
+        }
+        else
+        {
+            <EditForm Model="_bookingForm" OnValidSubmit="CreateBookingAsync">
+                <DataAnnotationsValidator/>
+                <ValidationSummary/>
+
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <div class="form-floating">
+                            <input type="datetime-local"
+                                   class="form-control"
+                                   @bind-value="_bookingForm.StartTime"
+                                   @bind-value:format="yyyy-MM-ddTHH:mm"/>
+                            <label>Start</label>
+                        </div>
+                    </div>
+                    <div class="col-md-6">
+                        <div class="form-floating">
+                            <input type="datetime-local"
+                                   class="form-control"
+                                   @bind-value="_bookingForm.EndTime"
+                                   @bind-value:format="yyyy-MM-ddTHH:mm"/>
+                            <label>Ende</label>
+                        </div>
+                    </div>
+                </div>
+                <button class="btn btn-primary w-100 mt-3" disabled="@_bookingProcessing">Buchung anlegen</button>
+            </EditForm>
+
+            @if (!string.IsNullOrWhiteSpace(_bookingStatus))
+            {
+                <p class="mt-2">@_bookingStatus</p>
+            }
+        }
+    </section>
+
+    <section>
+        <header class="section-header">
+            <h2>Meine Buchungen</h2>
+            <button class="btn btn-link" @onclick="LoadBookingsAsync" disabled="@_bookingsLoading">Aktualisieren</button>
+        </header>
+
+        @if (!HasParticipant)
+        {
+            <p class="text-muted">Keine Buchungen ohne Teilnehmer.</p>
+        }
+        else if (_bookingsLoading)
+        {
+            <p>Lade Buchungen...</p>
+        }
+        else if (_bookings.Count == 0)
+        {
+            <p class="text-muted">Keine Buchungen vorhanden.</p>
+        }
+        else
+        {
+            <div class="list-group">
+                @foreach (var booking in _bookings)
+                {
+                    <div class="list-group-item">
+                        <div class="d-flex justify-content-between align-items-center">
+                            <div>
+                                <h3 class="h6 mb-1">Buchung @booking.BookingId</h3>
+                                <p class="mb-1">
+                                    @booking.StartTime:dd.MM.yyyy HH:mm - @booking.EndTime:dd.MM.yyyy HH:mm
+                                </p>
+                                <small>Status: <strong>@booking.BookingStatus</strong></small>
+                            </div>
+                            <div class="d-flex flex-column gap-2">
+                                <button class="btn btn-outline-secondary btn-sm"
+                                        @onclick="(() => PayBookingAsync(booking))"
+                                        disabled="@_paymentProcessing">
+                                    Zahlung
+                                </button>
+                                <button class="btn btn-outline-danger btn-sm"
+                                        @onclick="(() => CancelBookingAsync(booking))">
+                                    Stornieren
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                }
+            </div>
+        }
+    </section>
+</div>
+
+@code {
+    private Guid? _activeParticipantId;
+    private string _participantInput = string.Empty;
+    private string? _participantStatus;
+    private readonly List<VehicleDto> _vehicles = new();
+    private readonly List<BookingDto> _bookings = new();
+    private readonly VehicleFilterModel _vehicleFilter = new();
+    private readonly BookingFormModel _bookingForm = new();
+    private VehicleDto? _selectedVehicle;
+    private bool _vehiclesLoading;
+    private bool _bookingsLoading;
+    private bool _bookingProcessing;
+    private bool _paymentProcessing;
+    private string? _bookingStatus;
+
+    private ServiceEndpointsOptions EndpointOptions => Options.Value;
+    private bool HasParticipant => _activeParticipantId.HasValue && _activeParticipantId.Value != Guid.Empty;
+
+    private HttpClient CreateClient() => HttpClientFactory.CreateClient();
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadVehiclesAsync();
+    }
+
+    private async Task ApplyParticipantAsync()
+    {
+        if (!Guid.TryParse(_participantInput, out var parsed))
+        {
+            _participantStatus = "Ungültige ParticipantId.";
+            _activeParticipantId = null;
+            _bookings.Clear();
+            return;
+        }
+
+        _activeParticipantId = parsed;
+        _participantStatus = "Teilnehmer gesetzt. Buchungen werden geladen…";
+        await LoadBookingsAsync();
+        _participantStatus = _bookings.Count == 0
+            ? "Keine Buchungen gefunden."
+            : "Buchungen aktualisiert.";
+    }
+
+    private async Task LoadVehiclesAsync()
+    {
+        _vehiclesLoading = true;
+        var client = CreateClient();
+
+        try
+        {
+            var query = $"?location={_vehicleFilter.Location}&status={_vehicleFilter.Status}";
+            var uri = BuildUri(EndpointOptions.CarSharingService, $"/api/vehicles{query}");
+            var data = await client.GetFromJsonAsync<List<VehicleDto>>(uri);
+            _vehicles.Clear();
+            if (data is not null)
+            {
+                _vehicles.AddRange(data);
+            }
+            _selectedVehicle ??= _vehicles.FirstOrDefault();
+            if (_selectedVehicle is not null)
+            {
+                _bookingForm.VehicleId = _selectedVehicle.VehicleId;
+            }
+        }
+        finally
+        {
+            _vehiclesLoading = false;
+        }
+    }
+
+    private void SelectVehicle(VehicleDto vehicle)
+    {
+        _selectedVehicle = vehicle;
+        _bookingForm.VehicleId = vehicle.VehicleId;
+    }
+
+    private async Task CreateBookingAsync()
+    {
+        if (!EnsureParticipant(out var participantId) || _selectedVehicle is null)
+        {
+            _bookingStatus = "Bitte Fahrzeug auswählen und Teilnehmer-ID setzen.";
+            return;
+        }
+
+        _bookingProcessing = true;
+        var client = CreateClient();
+        _bookingStatus = null;
+
+        try
+        {
+            var payload = new
+            {
+                VehicleId = _selectedVehicle.VehicleId,
+                ParticipantId = participantId,
+                StartTime = _bookingForm.StartTime,
+                EndTime = _bookingForm.EndTime
+            };
+
+            var response = await client.PostAsJsonAsync(
+                BuildUri(EndpointOptions.CarSharingService, "/api/bookings"),
+                payload);
+
+            _bookingStatus = response.IsSuccessStatusCode
+                ? "Buchung erstellt. Bitte bezahlen."
+                : $"Fehler: {response.ReasonPhrase}";
+
+            if (response.IsSuccessStatusCode)
+            {
+                await LoadBookingsAsync();
+                await LoadVehiclesAsync();
+            }
+        }
+        finally
+        {
+            _bookingProcessing = false;
+        }
+    }
+
+    private async Task LoadBookingsAsync()
+    {
+        if (!EnsureParticipant(out var participantId))
+        {
+            _bookings.Clear();
+            return;
+        }
+
+        _bookingsLoading = true;
+        var client = CreateClient();
+
+        try
+        {
+            var uri = BuildUri(EndpointOptions.CarSharingService, $"/api/bookings?participantId={participantId}");
+            var data = await client.GetFromJsonAsync<List<BookingDto>>(uri);
+            _bookings.Clear();
+            if (data is not null)
+            {
+                _bookings.AddRange(data.OrderByDescending(b => b.StartTime));
+            }
+        }
+        finally
+        {
+            _bookingsLoading = false;
+        }
+    }
+
+    private async Task PayBookingAsync(BookingDto booking)
+    {
+        if (!EnsureParticipant(out var participantId))
+        {
+            return;
+        }
+
+        _paymentProcessing = true;
+        var client = CreateClient();
+
+        try
+        {
+            var payload = new
+            {
+                ParticipantId = participantId,
+                Reference = booking.BookingId,
+                Amount = 29.0m
+            };
+
+            var response = await client.PostAsJsonAsync(
+                BuildUri(EndpointOptions.CarSharingService, "/api/payments/bookings"),
+                payload);
+
+            if (response.IsSuccessStatusCode)
+            {
+                await LoadBookingsAsync();
+            }
+        }
+        finally
+        {
+            _paymentProcessing = false;
+        }
+    }
+
+    private async Task CancelBookingAsync(BookingDto booking)
+    {
+        var client = CreateClient();
+        await client.DeleteAsync(
+            BuildUri(EndpointOptions.CarSharingService, $"/api/bookings/{booking.BookingId}"));
+        await LoadBookingsAsync();
+        await LoadVehiclesAsync();
+    }
+
+    private bool EnsureParticipant(out Guid participantId)
+    {
+        if (!HasParticipant)
+        {
+            participantId = Guid.Empty;
+            return false;
+        }
+
+        participantId = _activeParticipantId!.Value;
+        return true;
+    }
+
+    private static Uri BuildUri(string baseAddress, string pathAndQuery)
+    {
+        baseAddress = baseAddress.TrimEnd('/');
+        return new Uri($"{baseAddress}{pathAndQuery}");
+    }
+
+    private sealed class VehicleFilterModel
+    {
+        public string? Location { get; set; }
+        public string? Status { get; set; } = "available";
+    }
+
+    private sealed class BookingFormModel
+    {
+        [Required]
+        public Guid VehicleId { get; set; }
+
+        public DateTime StartTime { get; set; } = DateTime.Today.AddHours(8);
+        public DateTime EndTime { get; set; } = DateTime.Today.AddHours(10);
+    }
+}
+

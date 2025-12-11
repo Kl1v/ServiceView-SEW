@@ -1,0 +1,522 @@
+@page "/fitness"
+@rendermode InteractiveServer
+
+@using System.ComponentModel.DataAnnotations
+@using System.Text.Json
+@using System.Text.Json.Serialization
+@using Microsoft.Extensions.Options
+@inject IHttpClientFactory HttpClientFactory
+@inject IOptions<ServiceEndpointsOptions> Options
+@inject ILogger<Fitness> Logger
+
+<PageTitle>Fitness</PageTitle>
+
+<h1>Fitness-Tracking</h1>
+
+<div class="card participant-selector mb-4">
+    <div class="card-body">
+        <h2 class="h5">Teilnehmer auswählen</h2>
+        <p class="text-muted">Gib die ParticipantId (Zahl) ein, die im Fitness-Service existiert (z. B. 1).</p>
+        <div class="input-group">
+            <InputText @bind-Value="_participantInput" class="form-control" placeholder="z.B. 1"/>
+            <button class="btn btn-primary" @onclick="ApplyParticipantAsync">Daten laden</button>
+        </div>
+        @if (!string.IsNullOrWhiteSpace(_participantStatus))
+        {
+            <p class="mt-2 text-info">@_participantStatus</p>
+        }
+    </div>
+</div>
+
+@if (!HasParticipant)
+{
+    <div class="alert alert-warning">
+        Sobald eine gültige Teilnehmer-ID gesetzt ist, werden hier Workouts, Analysen und Empfehlungen angezeigt.
+    </div>
+}
+else
+{
+    <p class="text-muted">Alle Daten stammen direkt aus dem Fitness-Service.</p>
+
+    <div class="fitness-layout">
+        <section>
+            <header class="section-header">
+                <h2>Letzte Workouts</h2>
+                <button class="btn btn-link" @onclick="LoadWorkoutsAsync" disabled="@_workoutsLoading">Aktualisieren</button>
+            </header>
+
+            @if (_workoutsLoading)
+            {
+                <p>Lade Workouts...</p>
+            }
+            else if (_workouts.Count == 0)
+            {
+                <p class="text-muted">Noch keine Workouts vorhanden.</p>
+            }
+            else
+            {
+                <div class="table-responsive">
+                    <table class="table table-striped">
+                        <thead>
+                        <tr>
+                            <th>Datum</th>
+                            <th>Übung</th>
+                            <th>Dauer</th>
+                            <th>Wdh.</th>
+                            <th>Intensität</th>
+                            <th>Kalorien</th>
+                        </tr>
+                        </thead>
+                        <tbody>
+                        @foreach (var workout in _workouts)
+                        {
+                            <tr>
+                                <td>@workout.Date:dd.MM.yyyy</td>
+                                <td>@workout.Excercise</td>
+                                <td>@workout.Duration min</td>
+                                <td>@workout.Repetition</td>
+                                <td>@workout.Intensity</td>
+                                <td>@workout.BurnedCalories kcal</td>
+                            </tr>
+                        }
+                        </tbody>
+                    </table>
+                </div>
+            }
+        </section>
+
+        <section>
+            <header class="section-header">
+                <h2>Workout erfassen</h2>
+            </header>
+
+            <EditForm Model="_workoutForm" OnValidSubmit="CreateWorkoutAsync">
+                <DataAnnotationsValidator/>
+                <ValidationSummary/>
+
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <div class="form-floating">
+                            <InputText @bind-Value="_workoutForm.Excercise" class="form-control" placeholder="Übung"/>
+                            <label>Übungsart</label>
+                        </div>
+                    </div>
+                    <div class="col-md-6">
+                        <div class="form-floating">
+                            <InputNumber @bind-Value="_workoutForm.Intensity" class="form-control"/>
+                            <label>Intensität (Zahl)</label>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="form-floating">
+                            <InputNumber @bind-Value="_workoutForm.Duration" class="form-control"/>
+                            <label>Dauer (min)</label>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="form-floating">
+                            <InputNumber @bind-Value="_workoutForm.Repetition" class="form-control"/>
+                            <label>Wiederholungen</label>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="form-floating">
+                            <InputNumber @bind-Value="_workoutForm.CaloriesBurned" class="form-control"/>
+                            <label>Kalorien</label>
+                        </div>
+                    </div>
+                    <div class="col-12">
+                        <div class="form-floating">
+                            <InputDate @bind-Value="_workoutForm.Date" class="form-control"/>
+                            <label>Datum</label>
+                        </div>
+                    </div>
+                </div>
+                <button class="btn btn-success w-100 mt-3" disabled="@_workoutSubmitting">Workout speichern</button>
+            </EditForm>
+            @if (!string.IsNullOrWhiteSpace(_workoutStatus))
+            {
+                <p class="mt-2 text-info">@_workoutStatus</p>
+            }
+        </section>
+    </div>
+
+    <div class="fitness-layout">
+        <section>
+            <header class="section-header">
+                <h2>Analyse</h2>
+                <button class="btn btn-link" @onclick="LoadAnalyticsAsync" disabled="@_analyticsLoading">Berechnen</button>
+            </header>
+
+            <div class="row g-2">
+                <div class="col-md-6">
+                    <div class="form-floating">
+                        <InputDate @bind-Value="_analyticsFrom" class="form-control"/>
+                        <label>Zeitraum von</label>
+                    </div>
+                </div>
+                <div class="col-md-6">
+                    <div class="form-floating">
+                        <InputDate @bind-Value="_analyticsTo" class="form-control"/>
+                        <label>Zeitraum bis</label>
+                    </div>
+                </div>
+            </div>
+
+            @if (_analyticsLoading)
+            {
+                <p>Analysiere Daten...</p>
+            }
+            else if (_analytics is null)
+            {
+                <p class="text-muted">Noch keine Analyse geladen.</p>
+            }
+            else
+            {
+                <div class="analytics-cards">
+                    <div>
+                        <span>Ø Dauer</span>
+                        <strong>@_analytics.AverageDuration:F0 min</strong>
+                    </div>
+                    <div>
+                        <span>Gesamtdauer</span>
+                        <strong>@_analytics.Duration</strong>
+                    </div>
+                    <div>
+                        <span>Kalorien</span>
+                        <strong>@_analytics.TotalCalories</strong>
+                    </div>
+                    <div>
+                        <span>Bestleistung</span>
+                        <strong>@_analytics.BestPerformance</strong>
+                    </div>
+                </div>
+            }
+        </section>
+
+        <section>
+            <header class="section-header">
+                <h2>Empfehlungen</h2>
+                <div class="d-flex gap-2">
+                    <button class="btn btn-link" @onclick="LoadRecommendationsAsync" disabled="@_recommendationsLoading">Aktualisieren</button>
+                    <button class="btn btn-outline-warning btn-sm" @onclick="UnlockPremiumAsync" disabled="@_premiumProcessing">
+                        Premium freischalten
+                    </button>
+                </div>
+            </header>
+
+            @if (_recommendationsLoading)
+            {
+                <p>Lade Empfehlungen...</p>
+            }
+            else if (_recommendations.Count == 0)
+            {
+                <p class="text-muted">Keine Empfehlungen vorhanden.</p>
+            }
+            else
+            {
+                foreach (var recommendation in _recommendations)
+                {
+                    <div class="card recommendation-card">
+                        <div class="card-body">
+                            <h3 class="card-title">@recommendation.RecommendationType</h3>
+                            <p class="card-text">@recommendation.Description</p>
+                            <small class="text-muted">@recommendation.CreatedAt:dd.MM.yyyy</small>
+                        </div>
+                    </div>
+                }
+            }
+        </section>
+    </div>
+}
+
+@code {
+    private int? _activeParticipantId;
+    private string _participantInput = string.Empty;
+    private string? _participantStatus;
+    private readonly WorkoutFormModel _workoutForm = new();
+    private readonly List<WorkoutDto> _workouts = new();
+    private readonly List<RecommendationDto> _recommendations = new();
+    private AnalyticsSnapshot? _analytics;
+    private bool _workoutsLoading;
+    private bool _analyticsLoading;
+    private bool _recommendationsLoading;
+    private bool _workoutSubmitting;
+    private bool _premiumProcessing;
+    private string? _workoutStatus;
+    private DateTime _analyticsFrom = DateTime.Today.AddDays(-7);
+    private DateTime _analyticsTo = DateTime.Today;
+
+    private ServiceEndpointsOptions EndpointOptions => Options.Value;
+    private bool HasParticipant => _activeParticipantId.HasValue && _activeParticipantId.Value > 0;
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+
+    private HttpClient CreateClient() => HttpClientFactory.CreateClient();
+
+    private async Task ApplyParticipantAsync()
+    {
+        try
+        {
+            Logger.LogInformation("Button clicked -> ApplyParticipantAsync");
+            Logger.LogInformation("ApplyParticipant start with input '{Input}'", _participantInput);
+            if (!int.TryParse(_participantInput, out var parsed) || parsed <= 0)
+            {
+                _participantStatus = "Bitte eine gültige Teilnehmer-ID eingeben.";
+                _activeParticipantId = null;
+                Logger.LogWarning("ApplyParticipant invalid input '{Input}'", _participantInput);
+                return;
+            }
+
+            _activeParticipantId = parsed;
+            _participantStatus = "Teilnehmer gesetzt. Daten werden geladen…";
+            await Task.WhenAll(
+                LoadWorkoutsAsync(),
+                LoadAnalyticsAsync(),
+                LoadRecommendationsAsync());
+            _participantStatus = "Daten aktualisiert.";
+            Logger.LogInformation("ApplyParticipant finished for id {Id}", parsed);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "ApplyParticipant failed");
+            _participantStatus = $"Fehler beim Laden: {ex.Message}";
+        }
+    }
+
+    private async Task LoadWorkoutsAsync()
+    {
+        if (!EnsureParticipant(out var participantId))
+        {
+            return;
+        }
+
+        _workoutsLoading = true;
+        var client = CreateClient();
+        try
+        {
+            var uri = BuildUri(EndpointOptions.FitnessService, "/WorkoutController");
+            Logger.LogInformation("LoadWorkouts -> GET {Uri} for participant {ParticipantId}", uri, participantId);
+            var data = await GetJsonAsync<List<WorkoutDto>>(client, uri);
+            _workouts.Clear();
+            if (data is not null)
+            {
+                _workouts.AddRange(
+                    data.Where(w => w.ParticipantId == participantId)
+                        .OrderByDescending(w => w.Date)
+                        .Take(10));
+            }
+        }
+        catch
+        {
+            Logger.LogWarning("LoadWorkouts failed for participant {ParticipantId}", participantId);
+            _workouts.Clear();
+        }
+        finally
+        {
+            Logger.LogInformation("LoadWorkouts finished for participant {ParticipantId} with {Count} items", participantId, _workouts.Count);
+            _workoutsLoading = false;
+        }
+    }
+
+    private async Task CreateWorkoutAsync()
+    {
+        if (!EnsureParticipant(out var participantId))
+        {
+            _workoutStatus = "Bitte zuerst eine Teilnehmer-ID setzen.";
+            return;
+        }
+
+        _workoutSubmitting = true;
+        var client = CreateClient();
+
+        try
+        {
+            _workoutForm.ParticipantId = participantId;
+            var response = await client.PostAsJsonAsync(
+                BuildUri(EndpointOptions.FitnessService, "/WorkoutController"),
+                _workoutForm);
+
+            Logger.LogInformation("CreateWorkout -> POST /WorkoutController status {Status}", response.StatusCode);
+            _workoutStatus = response.IsSuccessStatusCode
+                ? "Workout gespeichert."
+                : $"Fehler: {response.ReasonPhrase}";
+
+            if (response.IsSuccessStatusCode)
+            {
+                _workoutForm.Reset();
+                await LoadWorkoutsAsync();
+                await LoadAnalyticsAsync();
+            }
+        }
+        catch (HttpRequestException ex)
+        {
+            Logger.LogError(ex, "CreateWorkout failed");
+            _workoutStatus = $"API-Fehler: {ex.Message}";
+        }
+        finally
+        {
+            _workoutSubmitting = false;
+        }
+    }
+
+    private async Task LoadAnalyticsAsync()
+    {
+        if (!EnsureParticipant(out var participantId))
+        {
+            return;
+        }
+
+        _analyticsLoading = true;
+        var client = CreateClient();
+
+        try
+        {
+            var uri = BuildUri(EndpointOptions.FitnessService,
+                $"/AnalyticController/ByParticipant/{participantId}?participantId={participantId}");
+            Logger.LogInformation("LoadAnalytics -> GET {Uri}", uri);
+            var list = await GetJsonAsync<List<AnalyticsSnapshot>>(client, uri);
+            _analytics = list?
+                .OrderByDescending(a => a.PeriodEnd)
+                .FirstOrDefault();
+        }
+        catch
+        {
+            Logger.LogWarning("LoadAnalytics failed for participant {ParticipantId}", participantId);
+            _analytics = null;
+        }
+        finally
+        {
+            Logger.LogInformation("LoadAnalytics finished for participant {ParticipantId}", participantId);
+            _analyticsLoading = false;
+        }
+    }
+
+    private async Task LoadRecommendationsAsync()
+    {
+        if (!EnsureParticipant(out var participantId))
+        {
+            return;
+        }
+
+        _recommendationsLoading = true;
+        var client = CreateClient();
+
+        try
+        {
+            var uri = BuildUri(EndpointOptions.FitnessService, "/RecommendationController");
+            Logger.LogInformation("LoadRecommendations -> GET {Uri}", uri);
+            var data = await GetJsonAsync<List<RecommendationDto>>(client, uri);
+            _recommendations.Clear();
+            if (data is not null)
+            {
+                _recommendations.AddRange(data.Where(r => r.ParticipantId == participantId));
+            }
+        }
+        catch
+        {
+            Logger.LogWarning("LoadRecommendations failed for participant {ParticipantId}", participantId);
+            _recommendations.Clear();
+        }
+        finally
+        {
+            Logger.LogInformation("LoadRecommendations finished for participant {ParticipantId} with {Count} items", participantId, _recommendations.Count);
+            _recommendationsLoading = false;
+        }
+    }
+
+    private async Task UnlockPremiumAsync()
+    {
+        if (!EnsureParticipant(out var participantId))
+        {
+            _participantStatus = "Teilnehmer erforderlich, um Premium zu aktivieren.";
+            return;
+        }
+
+        _premiumProcessing = true;
+        var client = CreateClient();
+
+        try
+        {
+            var uri = BuildUri(EndpointOptions.FitnessService, $"/RecommendationController/ForPremium/{participantId}?participantId={participantId}");
+            Logger.LogInformation("UnlockPremium -> GET {Uri}", uri);
+            var data = await GetJsonAsync<List<RecommendationDto>>(client, uri);
+            _recommendations.Clear();
+            if (data is not null)
+            {
+                _recommendations.AddRange(data.Where(r => r.ParticipantId == participantId));
+            }
+            _participantStatus = "Premium-Empfehlungen geladen.";
+        }
+        finally
+        {
+            Logger.LogInformation("UnlockPremium finished for participant {ParticipantId} with {Count} items", participantId, _recommendations.Count);
+            _premiumProcessing = false;
+        }
+    }
+
+    private bool EnsureParticipant(out int participantId)
+    {
+        participantId = 0;
+        if (!HasParticipant)
+        {
+            participantId = 0;
+            return false;
+        }
+
+        participantId = _activeParticipantId!.Value;
+        return true;
+    }
+
+    private static Uri BuildUri(string baseAddress, string pathAndQuery)
+    {
+        baseAddress = baseAddress.TrimEnd('/');
+        return new Uri($"{baseAddress}{pathAndQuery}");
+    }
+
+    private static async Task<T?> GetJsonAsync<T>(HttpClient client, Uri uri)
+    {
+        var response = await client.GetAsync(uri);
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        return await JsonSerializer.DeserializeAsync<T>(stream, JsonOptions);
+    }
+
+    private sealed class WorkoutFormModel
+    {
+        [Required]
+        [JsonPropertyName("participantId")]
+        public int ParticipantId { get; set; }
+
+        [Required]
+        [JsonPropertyName("excercise")]
+        public string Excercise { get; set; } = string.Empty;
+
+        [Required]
+        [JsonPropertyName("duration")]
+        public int Duration { get; set; } = 30;
+
+        [Required]
+        [JsonPropertyName("repetition")]
+        public int Repetition { get; set; } = 10;
+
+        [JsonPropertyName("intensity")]
+        public int Intensity { get; set; } = 1;
+
+        [JsonPropertyName("date")]
+        public DateTime Date { get; set; } = DateTime.Today;
+
+        [JsonPropertyName("burnedCalories")]
+        public int CaloriesBurned { get; set; } = 300;
+
+        public void Reset()
+        {
+            Excercise = string.Empty;
+            Duration = 30;
+            Repetition = 10;
+            Intensity = 1;
+            Date = DateTime.Today;
+            CaloriesBurned = 300;
+        }
+    }
+}
+

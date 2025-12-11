@@ -1,0 +1,351 @@
+@page "/events"
+
+@using System.ComponentModel.DataAnnotations
+@using Microsoft.Extensions.Options
+@inject IHttpClientFactory HttpClientFactory
+@inject IOptions<ServiceEndpointsOptions> Options
+
+<PageTitle>Events</PageTitle>
+
+<h1>Event-Management</h1>
+
+<p class="text-muted">Alle Daten liefert ausschließlich der Event-Service.</p>
+
+<div class="card participant-selector mb-4">
+    <div class="card-body">
+        <h2 class="h5">Teilnehmer-ID setzen</h2>
+        <div class="input-group">
+            <InputText @bind-Value="_participantInput" class="form-control" placeholder="ParticipantId eingeben"/>
+            <button class="btn btn-primary" @onclick="ApplyParticipantAsync">Tickets laden</button>
+        </div>
+        @if (!string.IsNullOrWhiteSpace(_participantStatus))
+        {
+            <p class="mt-2 text-info">@_participantStatus</p>
+        }
+    </div>
+</div>
+
+<div class="events-layout">
+    <section>
+        <header class="section-header">
+            <h2>Event-Katalog</h2>
+            <button class="btn btn-link" @onclick="LoadEventsAsync" disabled="@_eventsLoading">Aktualisieren</button>
+        </header>
+
+        @if (_eventsLoading)
+        {
+            <p>Events werden geladen...</p>
+        }
+        else if (_events.Count == 0)
+        {
+            <p class="text-muted">Noch keine Events verfügbar.</p>
+        }
+        else
+        {
+            <div class="list-group">
+                @foreach (var ev in _events)
+                {
+                    <button class="list-group-item list-group-item-action @(ev.EventId == _selectedEvent?.EventId ? "active" : string.Empty)"
+                            @onclick="@(() => SelectEvent(ev))">
+                        <div class="d-flex justify-content-between align-items-center">
+                            <div>
+                                <h3 class="h5 mb-1">@ev.Name</h3>
+                                <small>@ev.Location | @ev.StartDate:dd.MM.yyyy HH:mm</small>
+                            </div>
+                            <span>@ev.MaxParticipants Teilnehmer</span>
+                        </div>
+                    </button>
+                }
+            </div>
+        }
+    </section>
+
+    <section>
+        <header class="section-header">
+            <h2>Details & Ticketbuchung</h2>
+        </header>
+
+        @if (_selectedEvent is null)
+        {
+            <p class="text-muted">Event aus der Liste auswählen.</p>
+        }
+        else
+        {
+            <article class="card shadow-sm">
+                <div class="card-body">
+                    <h3 class="card-title">@_selectedEvent.Name</h3>
+                    <p class="card-text">@_selectedEvent.Description</p>
+                    <dl class="row">
+                        <dt class="col-sm-4">Ort</dt>
+                        <dd class="col-sm-8">@_selectedEvent.Location</dd>
+                        <dt class="col-sm-4">Beginn</dt>
+                        <dd class="col-sm-8">@_selectedEvent.StartDate:dd.MM.yyyy HH:mm</dd>
+                        <dt class="col-sm-4">Ende</dt>
+                        <dd class="col-sm-8">@_selectedEvent.EndDate:dd.MM.yyyy HH:mm</dd>
+                    </dl>
+
+                    @if (!HasParticipant)
+                    {
+                        <div class="alert alert-warning mt-3">
+                            Bitte zuerst eine gültige Teilnehmer-ID eingeben.
+                        </div>
+                    }
+                    else
+                    {
+                        <EditForm Model="_ticketForm" OnValidSubmit="BookTicketAsync">
+                            <DataAnnotationsValidator/>
+                            <ValidationSummary/>
+                            <button class="btn btn-primary" disabled="@_ticketProcessing">Ticket buchen</button>
+                        </EditForm>
+                        @if (!string.IsNullOrWhiteSpace(_ticketStatus))
+                        {
+                            <p class="mt-2">@_ticketStatus</p>
+                        }
+                    }
+                </div>
+            </article>
+        }
+    </section>
+
+    <section>
+        <header class="section-header">
+            <h2>Meine Tickets</h2>
+            <button class="btn btn-link" @onclick="LoadTicketsAsync" disabled="@_ticketsLoading">Aktualisieren</button>
+        </header>
+
+        @if (!HasParticipant)
+        {
+            <p class="text-muted">Keine Tickets ohne Teilnehmer.</p>
+        }
+        else if (_ticketsLoading)
+        {
+            <p>Lade Tickets...</p>
+        }
+        else if (_tickets.Count == 0)
+        {
+            <p class="text-muted">Noch keine Tickets gebucht.</p>
+        }
+        else
+        {
+            @foreach (var ticket in _tickets)
+            {
+                <div class="card ticket-card">
+                    <div class="card-body">
+                        <div class="d-flex justify-content-between">
+                            <div>
+                                <h3 class="card-title">Ticket @ticket.TicketCode</h3>
+                                <p class="card-text mb-1">Status: <strong>@ticket.Status</strong></p>
+                                <small>@ticket.CreatedAt:dd.MM.yyyy HH:mm</small>
+                            </div>
+                            <div class="d-flex flex-column gap-2">
+                                <button class="btn btn-outline-secondary btn-sm"
+                                        @onclick="(() => PayTicketAsync(ticket))"
+                                        disabled="@_ticketPaymentProcessing">
+                                    Zahlung ausführen
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            }
+        }
+    </section>
+</div>
+
+@code {
+    private Guid? _activeParticipantId;
+    private string _participantInput = string.Empty;
+    private string? _participantStatus;
+    private readonly List<EventDto> _events = new();
+    private readonly List<TicketDto> _tickets = new();
+    private EventDto? _selectedEvent;
+    private readonly TicketFormModel _ticketForm = new();
+    private bool _eventsLoading;
+    private bool _ticketsLoading;
+    private bool _ticketProcessing;
+    private bool _ticketPaymentProcessing;
+    private string? _ticketStatus;
+
+    private ServiceEndpointsOptions EndpointOptions => Options.Value;
+    private bool HasParticipant => _activeParticipantId.HasValue && _activeParticipantId.Value != Guid.Empty;
+
+    private HttpClient CreateClient() => HttpClientFactory.CreateClient();
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadEventsAsync();
+    }
+
+    private async Task ApplyParticipantAsync()
+    {
+        if (!Guid.TryParse(_participantInput, out var parsed))
+        {
+            _participantStatus = "Ungültige ParticipantId.";
+            _activeParticipantId = null;
+            _tickets.Clear();
+            return;
+        }
+
+        _activeParticipantId = parsed;
+        _participantStatus = "Teilnehmer gesetzt. Tickets werden geladen…";
+        await LoadTicketsAsync();
+        _participantStatus = _tickets.Count == 0
+            ? "Keine Tickets gefunden."
+            : "Tickets aktualisiert.";
+    }
+
+    private async Task LoadEventsAsync()
+    {
+        _eventsLoading = true;
+        var client = CreateClient();
+
+        try
+        {
+            var uri = BuildUri(EndpointOptions.EventService, "/api/events");
+            var data = await client.GetFromJsonAsync<List<EventDto>>(uri);
+            _events.Clear();
+            if (data is not null)
+            {
+                _events.AddRange(data.OrderBy(e => e.StartDate));
+            }
+            _selectedEvent ??= _events.FirstOrDefault();
+            if (_selectedEvent is not null)
+            {
+                _ticketForm.EventId = _selectedEvent.EventId;
+            }
+        }
+        finally
+        {
+            _eventsLoading = false;
+        }
+    }
+
+    private void SelectEvent(EventDto ev)
+    {
+        _selectedEvent = ev;
+        _ticketForm.EventId = ev.EventId;
+    }
+
+    private async Task BookTicketAsync()
+    {
+        if (!EnsureParticipant(out var participantId) || _selectedEvent is null)
+        {
+            _ticketStatus = "Bitte zuerst Teilnehmer-ID und Event wählen.";
+            return;
+        }
+
+        _ticketProcessing = true;
+        var client = CreateClient();
+        _ticketStatus = null;
+
+        try
+        {
+            var payload = new
+            {
+                EventId = _selectedEvent.EventId,
+                ParticipantId = participantId
+            };
+
+            var response = await client.PostAsJsonAsync(
+                BuildUri(EndpointOptions.EventService, "/api/tickets"),
+                payload);
+
+            _ticketStatus = response.IsSuccessStatusCode
+                ? "Ticket reserviert. Jetzt bezahlen."
+                : $"Fehler: {response.ReasonPhrase}";
+
+            await LoadTicketsAsync();
+        }
+        finally
+        {
+            _ticketProcessing = false;
+        }
+    }
+
+    private async Task LoadTicketsAsync()
+    {
+        if (!EnsureParticipant(out var participantId))
+        {
+            _tickets.Clear();
+            return;
+        }
+
+        _ticketsLoading = true;
+        var client = CreateClient();
+
+        try
+        {
+            var uri = BuildUri(EndpointOptions.EventService, $"/api/tickets?participantId={participantId}");
+            var data = await client.GetFromJsonAsync<List<TicketDto>>(uri);
+            _tickets.Clear();
+            if (data is not null)
+            {
+                _tickets.AddRange(data.OrderByDescending(t => t.CreatedAt));
+            }
+        }
+        finally
+        {
+            _ticketsLoading = false;
+        }
+    }
+
+    private async Task PayTicketAsync(TicketDto ticket)
+    {
+        if (!EnsureParticipant(out var participantId))
+        {
+            return;
+        }
+
+        _ticketPaymentProcessing = true;
+        var client = CreateClient();
+
+        try
+        {
+            var payload = new
+            {
+                ParticipantId = participantId,
+                Reference = ticket.TicketId,
+                Amount = 49.0m
+            };
+
+            var response = await client.PostAsJsonAsync(
+                BuildUri(EndpointOptions.EventService, "/api/payments/tickets"),
+                payload);
+
+            if (response.IsSuccessStatusCode)
+            {
+                await LoadTicketsAsync();
+            }
+        }
+        finally
+        {
+            _ticketPaymentProcessing = false;
+        }
+    }
+
+    private bool EnsureParticipant(out Guid participantId)
+    {
+        participantId = Guid.Empty;
+        if (!HasParticipant)
+        {
+            participantId = Guid.Empty;
+            return false;
+        }
+
+        participantId = _activeParticipantId!.Value;
+        return true;
+    }
+
+    private static Uri BuildUri(string baseAddress, string pathAndQuery)
+    {
+        baseAddress = baseAddress.TrimEnd('/');
+        return new Uri($"{baseAddress}{pathAndQuery}");
+    }
+
+    private sealed class TicketFormModel
+    {
+        [Required]
+        public Guid EventId { get; set; }
+    }
+}
+
